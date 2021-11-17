@@ -1,6 +1,7 @@
 import torch
 from transformers import BertTokenizerFast, BertForSequenceClassification, Trainer, TrainingArguments
 from datasets import load_dataset
+import time
 
 mrpc = load_dataset('glue', 'mrpc')
 
@@ -53,4 +54,9 @@ trainer = Trainer(
     eval_dataset=val_dataset             # evaluation dataset
 )
 
+start = time.time()
+
 trainer.train()
+
+end = time.time()
+print(end - start)
