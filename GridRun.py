@@ -18,7 +18,7 @@ def grid_run(run_experiment_fnc, grid, path=None, ignore_previous_results=False)
     logger.info('Starting experiment with grid %s (%d runs)', grid, len(configs))
     
     # Main loop.
-    for config in configs:
+    for config_num, config in enumerate(configs):
 
         # Check whether it has been done before.
         if path is not None:
@@ -33,7 +33,8 @@ def grid_run(run_experiment_fnc, grid, path=None, ignore_previous_results=False)
                         continue
         
         # Big log.
-        log_str = '\n----------\nRUN CONFIG\n----------\n'
+        log_str = 'RUN CONFIG ({}/{})'.format(config_num + 1, len(configs))
+        log_str = '\n' + '-' * len(log_str) + '\n' + log_str + '\n' + '-' * len(log_str) + '\n'
         log_str += '\n'.join([key + ': ' + str(value) for key, value in config.items()])
         log_str += '\n----------'
         logger.info(log_str)

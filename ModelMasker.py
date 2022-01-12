@@ -10,15 +10,20 @@ from torch.optim.lr_scheduler import StepLR
 import copy
 import pickle
 
+# TODO: remove randomness at the initialization of the mask.
+
 class ModelMasker(nn.Module):
-    def __init__(self, original_model, device, model_lr, mask_lr, decay):
+    def __init__(self, original_model, device, model_lr, mask_lr, model_decay, mask_decay, sparsity=None, abs_l1_reg_mask=True):
         super(ModelMasker, self).__init__()
         
         self.ones_model = original_model
         self.device = device
         self.model_lr = model_lr
         self.mask_lr = mask_lr
-        self.decay = decay
+        self.model_decay = model_decay
+        self.mask_decay = mask_decay
+        self.sparsity = sparsity
+        self.abs_l1_reg_mask = abs_l1_reg_mask
         
         self.sigmoid = nn.Sigmoid()
         self.hardm = 1000
@@ -43,7 +48,7 @@ class ModelMasker(nn.Module):
             pp.requires_grad = False
             self.model_weights[pn] = pp.clone()
             self.model_weights[pn].requires_grad = True
-            self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.05 # + 0.1 instead
+            self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.08 # + 0.1 instead
             pp.data = torch.ones(pp.shape)
     
     def zero_grad(self):
@@ -87,6 +92,15 @@ class ModelMasker(nn.Module):
         else:
             pn_stats['overall'] = ones_cnt*1./size_cnt
             return pn_stats
+        
+    # Should be called between forward and sgd_step.
+    def count_ones_differentiable(self):
+        size_cnt = 0
+        ones_cnt = 0
+        for pn, pp in self.mask_weights.items():
+            size_cnt += pp.numel()
+            ones_cnt += self.masks[pn].sum()
+        return size_cnt, ones_cnt
     
     def shift_mask_weights(self, n_ones):
         all_weights = [pp.flatten() for pp in self.mask_weights.values()]
@@ -124,17 +138,25 @@ class ModelMasker(nn.Module):
     
     def sgd_step(self):
         assert(self.training)
+        if self.sparsity is not None:
+            _, density = self.count_ones()
         for pn, pp in self.masked_model.named_parameters():
             if self.training_mask:
                 soft_mask = self.binarise(self.mask_weights[pn], hard=False).detach()
                 gradient_term = self.masks[pn].grad * soft_mask * (1 - soft_mask)
                 
-                decay_term = self.decay * (1 + self.mask_weights[pn])
+                # We only move mask weights to -1 instead of 0 if self.abs_l1_reg_mask == True.
+                # and if the target sparsity hasn't been reached.
+                l1_term = self.abs_l1_reg_mask
+                if self.sparsity is not None:
+                    l1_term = l1_term and (1 - density) < self.sparsity
+                
+                decay_term = self.mask_decay * (int(l1_term) + self.mask_weights[pn])
                 self.mask_weights[pn] -= self.mask_lr * (gradient_term + decay_term)
             
             gradient_term = self.model_weights[pn].grad
             self.model_weights[pn].requires_grad = False
-            decay_term = self.decay * self.model_weights[pn]
+            decay_term = self.model_decay * self.model_weights[pn]
             self.model_weights[pn] -= self.model_lr * (gradient_term + decay_term)
             
         self.masks = None
