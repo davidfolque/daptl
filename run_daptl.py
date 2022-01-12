@@ -138,7 +138,7 @@ def main():
     
     def run_experiment(batch_size, test_batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_decay, sparsity,
                     lr_factor, seed, mode, task, config):
-        device = 'cpu'
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         torch.manual_seed(seed)
         
         X_train, X_test, model_outputs = get_datasets(task, mode == 'upstream', args.few_shot_size)

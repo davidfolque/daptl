@@ -121,12 +121,12 @@ class ModelMasker(nn.Module):
         assert(self.masks is None)
         assert(self.masked_model is None)
         self.masks = {}
-        self.masked_model = copy.deepcopy(self.ones_model)
+        self.masked_model = copy.deepcopy(self.ones_model).to(self.device)
         for pn, pp in self.masked_model.named_parameters():
             self.masks[pn] = self.binarise(self.mask_weights[pn], hard=True)
             self.masks[pn].requires_grad = self.training_mask
             self.model_weights[pn].requires_grad = True
-            pp *= self.model_weights[pn] * self.masks[pn]
+            pp *= self.model_weights[pn].to(self.device) * self.masks[pn]
     
     def forward(self, x):
         self.put_on_mask()
