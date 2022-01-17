@@ -1,15 +1,18 @@
 from __future__ import print_function
 import argparse
+import logging
+import copy
+from tqdm.notebook import tqdm
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
-import logging
 
-import copy
-from ModelMasker import ModelMasker
+from ModelMasker2 import ModelMasker
 from Nets import LogReg, Net, WrapperNet
 from Tasks import get_datasets
 
@@ -21,7 +24,7 @@ def train(args, model, device, train_loader, epoch, lr_factor, verbose=True):
     model.train()
     train_loss = 0
     correct = 0
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (data, target) in enumerate(tqdm(train_loader, disable=not verbose)):
         data, target = data.to(device), target.to(device)
         model.zero_grad() # optimizer.zero_grad()
         output = model(data)
@@ -68,7 +71,7 @@ def test(model, device, test_loader, verbose=True):
     
 
 
-def main():
+def main(args=None):
     logging.basicConfig(level=logging.INFO)
     
     # Training settings
@@ -98,10 +101,11 @@ def main():
     parser.add_argument('--task-type', choices=['upstream', 'downstream'], required=True)
     parser.add_argument('--persistence', type=str)
     parser.add_argument('--verbose', action='store_true', default=False)
+    parser.add_argument('--plots', action='store_true', default=False)
     parser.add_argument('--few-shot-size', type=int, default=10)
     parser.add_argument('--task', nargs='+', choices=['mnist1','mnist2','mnist3','cifar'], required=True)
     parser.add_argument('--model', choices=['LogReg', 'Conv', 'ResNet'], default='LogReg')
-    args = parser.parse_args()
+    args = parser.parse_args(args=args)
     
     if args.persistence is None:
         ans = input('You haven\'t specified a persistence. Do you want to continue? (Yes/no): ')
@@ -196,6 +200,12 @@ def main():
                 test_loss, test_score = test(model, device, test_loader, verbose=args.verbose)
                 test_losses.append(test_loss)
                 test_scores.append(test_score)
+                
+                if args.plots:
+                    all_ltnz = [pp.flatten() for pp in model.last_time_nonzero.values()]
+                    all_ltnz = torch.cat(all_ltnz, 0)
+                    plt.hist(all_ltnz.cpu().numpy())
+                    plt.show()
         
         return {
             'test_score': test_scores[-1],

@@ -7,16 +7,42 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.optim.lr_scheduler import StepLR
 
+import re
 import copy
 import pickle
 
-# TODO: remove randomness at the initialization of the mask.
+'''
+v1: Original version.
+v2: Improved implementation to acount for batch normalization.
 
+Next version:
+    - Remove abs_l1_reg_mask
+    - Add 2 regularization parameters
+    - Add epsilon to mask gradients
+    - Add option to make mask random or not.
+
+
+'''
+
+
+
+# model_decay: parameter of L2 regularization for model weights.
+#   Updates: w -= model_lr * (w.grad + model_decay * w)
+# 
 class ModelMasker(nn.Module):
-    def __init__(self, original_model, device, model_lr, mask_lr, model_decay, mask_decay, sparsity=None, abs_l1_reg_mask=True):
+    """
+    A class that adds masking functionalities to a pytorch model.
+    
+    The sgd updates are the following:
+        model_weights -= model_lr * (model_weights.grad + model_decay * model_weights)
+        l1_term = int(abs_l1_reg_mask and current_sparsity < sparsity)
+        mask_weights -= mask_lr * (mask_weights.grad + mask_decay * (l1_term + mask_weights))
+    """
+    
+    def __init__(self, model, device, model_lr, mask_lr, model_decay, mask_decay, sparsity=None, abs_l1_reg_mask=True):
         super(ModelMasker, self).__init__()
         
-        self.ones_model = original_model
+        self.model = model.to(device)
         self.device = device
         self.model_lr = model_lr
         self.mask_lr = mask_lr
@@ -40,29 +66,37 @@ class ModelMasker(nn.Module):
         # Is not none between a forward and a sgd_step.
         self.masks = None
         
-        # The model with the masks put on. Is not none between a forward and a sgd_step.
-        self.masked_model = None
+        # The last step in which each weight was not zero.
+        self.steps = 0
+        self.last_time_nonzero = {}
         
         # Initialize mask_weights.
-        for pn, pp in self.ones_model.named_parameters():
+        for pn, pp in self.get_maskable_parameters():
             pp.requires_grad = False
             self.model_weights[pn] = pp.clone()
             self.model_weights[pn].requires_grad = True
             self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.08 # + 0.1 instead
-            pp.data = torch.ones(pp.shape)
+            self.last_time_nonzero[pn] = torch.zeros(pp.shape, dtype=int).to(self.device)
+    
+    def get_maskable_parameters(self):
+        def is_not_bn(x):
+            return re.search(pattern=r'bn\d*\.(weight|bias)', string=x[0]) is None
+        return filter(is_not_bn, self.model.named_parameters())
     
     def zero_grad(self):
         super(ModelMasker, self).zero_grad()
-        for pn in self.model_weights:
-            if self.model_weights[pn].grad is not None:
-                self.model_weights[pn].grad *= 0
-            if self.mask_weights[pn].grad is not None:
-                self.mask_weights[pn].grad *= 0
+        for pn, pp in self.get_maskable_parameters():
+            pp.grad = None
+            self.model_weights[pn].grad = None
+            self.mask_weights[pn].grad = None
     
     def state_dict(self):
-        return {'model_weights': self.model_weights, 'mask_weights': self.mask_weights}
+        return {'model_state_dict': self.model.state_dict(),
+                'model_weights': self.model_weights,
+                'mask_weights': self.mask_weights}
     
     def load_state_dict(self, state_dict):
+        self.model.load_state_dict(state_dict['model_state_dict'])
         self.model_weights = state_dict['model_weights']
         self.mask_weights = state_dict['mask_weights']
     
@@ -119,28 +153,32 @@ class ModelMasker(nn.Module):
     
     def put_on_mask(self):
         assert(self.masks is None)
-        assert(self.masked_model is None)
         self.masks = {}
-        self.masked_model = copy.deepcopy(self.ones_model).to(self.device)
-        for pn, pp in self.masked_model.named_parameters():
+        for pn, pp in self.get_maskable_parameters():
             self.masks[pn] = self.binarise(self.mask_weights[pn], hard=True)
             self.masks[pn].requires_grad = self.training_mask
             self.model_weights[pn].requires_grad = True
-            pp *= self.model_weights[pn].to(self.device) * self.masks[pn]
+                
+            name = 'self.model.' + pn
+            name = re.sub(pattern=r'\.(\d+)', repl='[\\1]', string=name)
+            exec(name + ' = nn.Parameter(torch.zeros_like(' + name + '.data))')
+            pp = eval(name)
+            pp.requires_grad = False
+            pp += self.model_weights[pn] * self.masks[pn]
     
     def forward(self, x):
         self.put_on_mask()
-        result = self.masked_model(x)
+        result = self.model(x)
         if not self.training:
             self.masks = None
-            self.masked_model = None
         return result
     
     def sgd_step(self):
+        self.steps += 1
         assert(self.training)
         if self.sparsity is not None:
             _, density = self.count_ones()
-        for pn, pp in self.masked_model.named_parameters():
+        for pn, _ in self.get_maskable_parameters():
             if self.training_mask:
                 soft_mask = self.binarise(self.mask_weights[pn], hard=False).detach()
                 gradient_term = self.masks[pn].grad * soft_mask * (1 - soft_mask)
@@ -153,6 +191,9 @@ class ModelMasker(nn.Module):
                 
                 decay_term = self.mask_decay * (int(l1_term) + self.mask_weights[pn])
                 self.mask_weights[pn] -= self.mask_lr * (gradient_term + decay_term)
+                
+                # Update last_time_nonzero.
+                self.last_time_nonzero[pn][self.mask_weights[pn] > 0] = self.steps
             
             gradient_term = self.model_weights[pn].grad
             self.model_weights[pn].requires_grad = False
@@ -160,5 +201,4 @@ class ModelMasker(nn.Module):
             self.model_weights[pn] -= self.model_lr * (gradient_term + decay_term)
             
         self.masks = None
-        self.masked_model = None
 
