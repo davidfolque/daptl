@@ -209,11 +209,20 @@ def main(args=None):
                 test_scores.append(test_score)
                 
                 if args.plots:
+                    all_mw = [pp.flatten() for pp in model.mask_weights.values()]
+                    all_mw = torch.cat(all_mw, 0)
+                    plt.hist(all_mw.cpu().numpy())
+                    plt.show()
+                    print(all_mw.min())
+
                     all_ltnz = [pp.flatten() for pp in model.last_time_nonzero.values()]
                     all_ltnz = torch.cat(all_ltnz, 0)
                     plt.hist(all_ltnz.cpu().numpy())
                     plt.show()
         
+        #plt.imshow(model.model.fc1.weight.data.cpu().numpy()[0].reshape(8,8))
+        #plt.show()
+
         return {
             'test_score': test_scores[-1],
             'train_losses': train_losses,

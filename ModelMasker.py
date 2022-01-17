@@ -23,6 +23,9 @@ Next version:
     - Add epsilon to mask gradients
     - Add option to make mask random or not.
 
+TODO:
+    - Adapt for the use of any optimizer:
+        - Save weights as parameters, create function to compute their grads manually.
 
 '''
 
@@ -84,7 +87,8 @@ class ModelMasker(nn.Module):
         for pn, pp in self.get_maskable_parameters():
             self.model_weights[pn] = pp.data.clone()
             self.model_weights[pn].requires_grad = False
-            self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.08 # + 0.1 instead
+            #self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.08 # + 0.1 instead
+            self.mask_weights[pn] = torch.ones(pp.shape).to(self.device) * 0.01
             self.last_time_nonzero[pn] = torch.zeros(pp.shape, dtype=int).to(self.device)
     
     def multiply_learning_rates(self, factor):
@@ -175,6 +179,9 @@ class ModelMasker(nn.Module):
         self.steps += 1
         assert(self.training)
         _, density = self.count_ones()
+        mask_grad_norm = 0
+        mask_decay_norm = 0
+        total = 0
         for pn, pp in self.get_maskable_parameters():
             if self.training_mask:
                 soft_mask = self.binarise(self.mask_weights[pn], hard=False)
@@ -186,15 +193,22 @@ class ModelMasker(nn.Module):
                 if (1 - density) < self.sparsity:
                     decay_term += self.mtp.mask_sl1_decay
                 
+                
                 self.mask_weights[pn] -= self.mtp.mask_lr * (gradient_term + decay_term)
+                mask_grad_norm += gradient_term.abs().sum().item()
+                mask_decay_norm += decay_term.abs().sum().item()
+                total += gradient_term.numel()
                 
                 # Update last_time_nonzero.
                 self.last_time_nonzero[pn][self.mask_weights[pn] > 0] = self.steps
             
-            model_weights_grad = pp.grad * self.masks[pn]
+            #model_weights_grad = pp.grad * self.masks[pn]
+            model_weights_grad = pp.grad * soft_mask
             gradient_term = model_weights_grad
             decay_term = self.mtp.model_l2_decay * self.model_weights[pn]
             self.model_weights[pn] -= self.mtp.model_lr * (gradient_term + decay_term)
             
         self.masks = None
+        #print('grad ', mask_grad_norm / total)
+        #print('decay', mask_decay_norm / total)
 
