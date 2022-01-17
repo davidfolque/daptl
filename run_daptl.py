@@ -12,7 +12,7 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 
-from ModelMasker2 import ModelMasker
+from ModelMasker import ModelMasker, MaskerTrainingParameters
 from Nets import LogReg, Net, WrapperNet
 from Tasks import get_datasets
 
@@ -40,8 +40,8 @@ def train(args, model, device, train_loader, epoch, lr_factor, verbose=True):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item(), density, int(ones)))
     # Scheduler step.
-    model.model_lr *= lr_factor
-    model.mask_lr *= lr_factor
+    model.mtp.model_lr *= lr_factor
+    model.mtp.mask_lr *= lr_factor
     
     # Loss, accuracy
     return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset)
@@ -159,8 +159,16 @@ def main(args=None):
             
             # Fix model output and input sizes.
             
-        model = ModelMasker(inner_model, device, model_lr=model_lr, mask_lr=mask_lr, 
-                            model_decay=model_decay, mask_decay=mask_decay, sparsity=sparsity)
+        masker_training_parameters = MaskerTrainingParameters(
+            model_lr=model_lr,
+            mask_lr=mask_lr,
+            model_l2_decay=model_decay,
+            mask_l2_decay=mask_decay,
+            mask_sl1_decay=mask_decay,
+            mask_grad_eps=0
+        )
+        model = ModelMasker(inner_model, device, masker_training_parameters=masker_training_parameters,
+                            sparsity=sparsity)
         
         if mode != 'upstream':
             with Persistence(args.persistence) as db:

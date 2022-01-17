@@ -10,13 +10,14 @@ from torch.optim.lr_scheduler import StepLR
 import re
 import copy
 import pickle
+from collections import namedtuple
 
 '''
 v1: Original version.
 v2: Improved implementation to acount for batch normalization.
 
 Next version:
-    - Remove abs_l1_reg_mask
+    - Remove abs_l1_reg_mask. Done.
     - Add 2 regularization parameters
     - Add epsilon to mask gradients
     - Add option to make mask random or not.
@@ -26,30 +27,37 @@ Next version:
 
 
 
-# model_decay: parameter of L2 regularization for model weights.
-#   Updates: w -= model_lr * (w.grad + model_decay * w)
-# 
+'''
+Model updates: w -= model_lr * (w.grad + model_l2_decay * w)
+Mask updates: w -= mask_lr * (dL/d(mask) * (mask_grad_eps + d(masked_model)/d())
+'''
+MaskerTrainingParameters = namedtuple('MaskerTrainingParameters', [
+    'model_lr',
+    'mask_lr',
+    'model_l2_decay',
+    'mask_l2_decay',
+    'mask_sl1_decay',
+    'mask_grad_eps'
+])
+
+
 class ModelMasker(nn.Module):
     """
     A class that adds masking functionalities to a pytorch model.
     
     The sgd updates are the following:
         model_weights -= model_lr * (model_weights.grad + model_decay * model_weights)
-        l1_term = int(abs_l1_reg_mask and current_sparsity < sparsity)
+        l1_term = int(current_sparsity < sparsity)
         mask_weights -= mask_lr * (mask_weights.grad + mask_decay * (l1_term + mask_weights))
     """
     
-    def __init__(self, model, device, model_lr, mask_lr, model_decay, mask_decay, sparsity=None, abs_l1_reg_mask=True):
+    def __init__(self, model, device, masker_training_parameters, sparsity):
         super(ModelMasker, self).__init__()
         
         self.model = model.to(device)
         self.device = device
-        self.model_lr = model_lr
-        self.mask_lr = mask_lr
-        self.model_decay = model_decay
-        self.mask_decay = mask_decay
+        self.mtp = masker_training_parameters
         self.sparsity = sparsity
-        self.abs_l1_reg_mask = abs_l1_reg_mask
         
         self.sigmoid = nn.Sigmoid()
         self.hardm = 1000
@@ -176,29 +184,26 @@ class ModelMasker(nn.Module):
     def sgd_step(self):
         self.steps += 1
         assert(self.training)
-        if self.sparsity is not None:
-            _, density = self.count_ones()
+        _, density = self.count_ones()
         for pn, _ in self.get_maskable_parameters():
             if self.training_mask:
                 soft_mask = self.binarise(self.mask_weights[pn], hard=False).detach()
-                gradient_term = self.masks[pn].grad * soft_mask * (1 - soft_mask)
+                gradient_term = self.masks[pn].grad * (self.mtp.mask_grad_eps + soft_mask * (1 - soft_mask))
                 
-                # We only move mask weights to -1 instead of 0 if self.abs_l1_reg_mask == True.
-                # and if the target sparsity hasn't been reached.
-                l1_term = self.abs_l1_reg_mask
-                if self.sparsity is not None:
-                    l1_term = l1_term and (1 - density) < self.sparsity
+                # We only move mask weights to -1 if the target sparsity hasn't been reached.
+                decay_term = self.mtp.mask_l2_decay * self.mask_weights[pn]
+                if (1 - density) < self.sparsity:
+                    decay_term += self.mtp.mask_sl1_decay
                 
-                decay_term = self.mask_decay * (int(l1_term) + self.mask_weights[pn])
-                self.mask_weights[pn] -= self.mask_lr * (gradient_term + decay_term)
+                self.mask_weights[pn] -= self.mtp.mask_lr * (gradient_term + decay_term)
                 
                 # Update last_time_nonzero.
                 self.last_time_nonzero[pn][self.mask_weights[pn] > 0] = self.steps
             
             gradient_term = self.model_weights[pn].grad
             self.model_weights[pn].requires_grad = False
-            decay_term = self.model_decay * self.model_weights[pn]
-            self.model_weights[pn] -= self.model_lr * (gradient_term + decay_term)
+            decay_term = self.mtp.model_l2_decay * self.model_weights[pn]
+            self.model_weights[pn] -= self.mtp.model_lr * (gradient_term + decay_term)
             
         self.masks = None
 
