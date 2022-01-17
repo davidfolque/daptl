@@ -40,8 +40,7 @@ def train(args, model, device, train_loader, epoch, lr_factor, verbose=True):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item(), density, int(ones)))
     # Scheduler step.
-    model.mtp.model_lr *= lr_factor
-    model.mtp.mask_lr *= lr_factor
+    model.multiply_learning_rates(lr_factor)
     
     # Loss, accuracy
     return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset)

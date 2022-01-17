@@ -17,8 +17,9 @@ v1: Original version.
 v2: Improved implementation to acount for batch normalization.
 
 Next version:
+    v3: Simplified implementation. Now only the gradients of the masked model are computed by autograd.
     - Remove abs_l1_reg_mask. Done.
-    - Add 2 regularization parameters
+    - Add 2 regularization parameters. Done.
     - Add epsilon to mask gradients
     - Add option to make mask random or not.
 
@@ -31,6 +32,7 @@ Next version:
 Model updates: w -= model_lr * (w.grad + model_l2_decay * w)
 Mask updates: w -= mask_lr * (dL/d(mask) * (mask_grad_eps + d(masked_model)/d())
 '''
+
 MaskerTrainingParameters = namedtuple('MaskerTrainingParameters', [
     'model_lr',
     'mask_lr',
@@ -80,23 +82,19 @@ class ModelMasker(nn.Module):
         
         # Initialize mask_weights.
         for pn, pp in self.get_maskable_parameters():
-            pp.requires_grad = False
-            self.model_weights[pn] = pp.clone()
-            self.model_weights[pn].requires_grad = True
+            self.model_weights[pn] = pp.data.clone()
+            self.model_weights[pn].requires_grad = False
             self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.08 # + 0.1 instead
             self.last_time_nonzero[pn] = torch.zeros(pp.shape, dtype=int).to(self.device)
     
+    def multiply_learning_rates(self, factor):
+        self.mtp = self.mtp._replace(model_lr=self.mtp.model_lr * factor,
+                                     mask_lr=self.mtp.mask_lr * factor)
+
     def get_maskable_parameters(self):
         def is_not_bn(x):
             return re.search(pattern=r'bn\d*\.(weight|bias)', string=x[0]) is None
         return filter(is_not_bn, self.model.named_parameters())
-    
-    def zero_grad(self):
-        super(ModelMasker, self).zero_grad()
-        for pn, pp in self.get_maskable_parameters():
-            pp.grad = None
-            self.model_weights[pn].grad = None
-            self.mask_weights[pn].grad = None
     
     def state_dict(self):
         return {'model_state_dict': self.model.state_dict(),
@@ -164,15 +162,7 @@ class ModelMasker(nn.Module):
         self.masks = {}
         for pn, pp in self.get_maskable_parameters():
             self.masks[pn] = self.binarise(self.mask_weights[pn], hard=True)
-            self.masks[pn].requires_grad = self.training_mask
-            self.model_weights[pn].requires_grad = True
-                
-            name = 'self.model.' + pn
-            name = re.sub(pattern=r'\.(\d+)', repl='[\\1]', string=name)
-            exec(name + ' = nn.Parameter(torch.zeros_like(' + name + '.data))')
-            pp = eval(name)
-            pp.requires_grad = False
-            pp += self.model_weights[pn] * self.masks[pn]
+            pp.data = self.model_weights[pn] * self.masks[pn]
     
     def forward(self, x):
         self.put_on_mask()
@@ -185,10 +175,11 @@ class ModelMasker(nn.Module):
         self.steps += 1
         assert(self.training)
         _, density = self.count_ones()
-        for pn, _ in self.get_maskable_parameters():
+        for pn, pp in self.get_maskable_parameters():
             if self.training_mask:
-                soft_mask = self.binarise(self.mask_weights[pn], hard=False).detach()
-                gradient_term = self.masks[pn].grad * (self.mtp.mask_grad_eps + soft_mask * (1 - soft_mask))
+                soft_mask = self.binarise(self.mask_weights[pn], hard=False)
+                masks_grad = pp.grad * self.model_weights[pn]
+                gradient_term = masks_grad * soft_mask * (1 - soft_mask)
                 
                 # We only move mask weights to -1 if the target sparsity hasn't been reached.
                 decay_term = self.mtp.mask_l2_decay * self.mask_weights[pn]
@@ -200,8 +191,8 @@ class ModelMasker(nn.Module):
                 # Update last_time_nonzero.
                 self.last_time_nonzero[pn][self.mask_weights[pn] > 0] = self.steps
             
-            gradient_term = self.model_weights[pn].grad
-            self.model_weights[pn].requires_grad = False
+            model_weights_grad = pp.grad * self.masks[pn]
+            gradient_term = model_weights_grad
             decay_term = self.mtp.model_l2_decay * self.model_weights[pn]
             self.model_weights[pn] -= self.mtp.model_lr * (gradient_term + decay_term)
             
