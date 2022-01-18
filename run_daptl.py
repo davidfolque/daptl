@@ -196,7 +196,7 @@ def main(args=None):
         test_losses = []
         test_scores = []
         
-        optimizer = optim.SGD([
+        optimizer = optim.RMSprop([
             {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
             {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
         ])
@@ -218,12 +218,14 @@ def main(args=None):
                     all_mw = [pp.flatten() for pp in model.mask_weights.values()]
                     all_mw = torch.cat(all_mw, 0)
                     plt.hist(all_mw.detach().cpu().numpy())
+                    plt.axvline(x=0, c='k')
                     plt.show()
                     print(all_mw.min())
 
                     all_ltnz = [pp.flatten() for pp in model.last_time_nonzero.values()]
                     all_ltnz = torch.cat(all_ltnz, 0)
                     plt.hist(all_ltnz.cpu().numpy())
+                    plt.axhline(y=all_ltnz.numel() * (1 - float(args.sparsity)), c='k')
                     plt.show()
         
         #plt.imshow(model.model.fc1.weight.data.cpu().numpy()[0].reshape(8,8))

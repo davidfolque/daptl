@@ -22,10 +22,10 @@ Next version:
     - Add 2 regularization parameters. Done.
     - Add epsilon to mask gradients
     - Add option to make mask random or not.
+    - Adapt for the use of any optimizer. Done.
 
 TODO:
-    - Adapt for the use of any optimizer:
-        - Save weights as parameters, create function to compute their grads manually.
+    - Add warm-up of the mask lr?
 
 '''
 
@@ -91,7 +91,7 @@ class ModelMasker(nn.Module):
             self.model_weights[pn] = nn.Parameter(pp.data.clone())
             self.model_weights[pn].requires_grad = True
             #self.mask_weights[pn] = torch.randn(pp.shape).to(self.device) * 0.03 + 0.08 # + 0.1 instead
-            self.mask_weights[pn] = nn.Parameter(torch.ones(pp.shape).to(self.device) * 0.01)
+            self.mask_weights[pn] = nn.Parameter(torch.ones(pp.shape).to(self.device) * 0.5)
             self.mask_weights[pn].requires_grad = True
             self.last_time_nonzero[pn] = torch.zeros(pp.shape, dtype=int).to(self.device)
     
