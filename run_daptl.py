@@ -20,7 +20,7 @@ from GridRun import grid_run
 from Persistence import Persistence
 
 
-def train(args, model, device, train_loader, epoch, lr_factor, verbose=True):
+def train(args, model, optimizer, device, train_loader, epoch, lr_factor, verbose=True):
     model.train()
     train_loss = 0
     correct = 0
@@ -34,13 +34,12 @@ def train(args, model, device, train_loader, epoch, lr_factor, verbose=True):
         pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
         correct += pred.eq(target.view_as(pred)).sum().item()
         model.sgd_step() # optimizer.step()
+        optimizer.step()
         ones, density = model.count_ones()
         if verbose and batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tDensity: {:.6f} ({})'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item(), density, int(ones)))
-    # Scheduler step.
-    model.multiply_learning_rates(lr_factor)
     
     # Loss, accuracy
     return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset)
@@ -197,9 +196,16 @@ def main(args=None):
         test_losses = []
         test_scores = []
         
+        optimizer = optim.SGD([
+            {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
+            {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
+        ])
+        lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=lr_factor)
+        
         for epoch in range(n_epochs):
             
-            train_loss, train_score = train(args, model, device, train_loader, epoch, lr_factor, verbose=args.verbose)
+            train_loss, train_score = train(args, model, optimizer, device, train_loader, epoch, lr_factor, verbose=args.verbose)
+            lr_scheduler.step()
             train_losses.append(train_loss)
             train_scores.append(train_score)
             
@@ -211,7 +217,7 @@ def main(args=None):
                 if args.plots:
                     all_mw = [pp.flatten() for pp in model.mask_weights.values()]
                     all_mw = torch.cat(all_mw, 0)
-                    plt.hist(all_mw.cpu().numpy())
+                    plt.hist(all_mw.detach().cpu().numpy())
                     plt.show()
                     print(all_mw.min())
 
