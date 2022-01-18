@@ -110,6 +110,8 @@ def main(args=None):
         if ans.lower() == 'no':
             print('Exit')
             exit()
+    elif args.persistence == '':
+        args.persistence = None
     
     if args.task_type == 'upstream':
         modes = ['upstream']
@@ -196,7 +198,7 @@ def main(args=None):
         test_losses = []
         test_scores = []
         
-        optimizer = optim.RMSprop([
+        optimizer = optim.SGD([
             {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
             {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
         ])

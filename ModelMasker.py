@@ -37,7 +37,7 @@ Mask updates: w -= mask_lr * (dL/d(mask) * (mask_grad_eps + d(masked_model)/d())
 '''
 
 def is_not_bn(x):
-    return re.search(pattern=r'bn\d*\.(weight|bias)', string=x[0]) is None
+    return re.search(pattern=r'bn\d*\.(weight|bias)', string=x) is None
 
 MaskerTrainingParameters = namedtuple('MaskerTrainingParameters', [
     'model_lr',
@@ -105,7 +105,7 @@ class ModelMasker(nn.Module):
                 yield pp
 
     def get_maskable_parameters(self):
-        return filter(is_not_bn, self.model.named_parameters())
+        return filter(lambda x: is_not_bn(x[0]), self.model.named_parameters())
     
     def state_dict(self):
         return {'model_state_dict': self.model.state_dict(),
