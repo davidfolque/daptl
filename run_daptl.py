@@ -20,7 +20,7 @@ from GridRun import grid_run
 from Persistence import Persistence
 
 
-def train(args, model, optimizer, device, train_loader, epoch, lr_factor, verbose=True):
+def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, lr_factor, verbose=True):
     model.train()
     train_loss = 0
     correct = 0
@@ -28,13 +28,14 @@ def train(args, model, optimizer, device, train_loader, epoch, lr_factor, verbos
         data, target = data.to(device), target.to(device)
         model.zero_grad() # optimizer.zero_grad()
         output = model(data)
-        loss = F.nll_loss(output, target) # Accepts log-probabilities.
-        loss.backward()
-        train_loss += loss.item() * len(data)
         pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
         correct += pred.eq(target.view_as(pred)).sum().item()
-        model.sgd_step() # optimizer.step()
+        loss = F.nll_loss(output, target) # Accepts log-probabilities.
+        train_loss += loss.item() * len(data)
+        loss.backward()
+        model.compute_gradients()
         optimizer.step()
+        lr_scheduler.step()
         ones, density = model.count_ones()
         if verbose and batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tDensity: {:.6f} ({})'.format(
@@ -98,6 +99,7 @@ def main(args=None):
                         help='how many batches to wait before logging training status')
     parser.add_argument('--task-type', choices=['upstream', 'downstream'], required=True)
     parser.add_argument('--persistence', type=str)
+    parser.add_argument('--no-persistence', action='store_true', default=False)
     parser.add_argument('--verbose', action='store_true', default=False)
     parser.add_argument('--plots', action='store_true', default=False)
     parser.add_argument('--few-shot-size', type=int, default=10)
@@ -105,13 +107,9 @@ def main(args=None):
     parser.add_argument('--model', choices=['LogReg', 'Conv', 'ResNet'], default='LogReg')
     args = parser.parse_args(args=args)
     
-    if args.persistence is None:
-        ans = input('You haven\'t specified a persistence. Do you want to continue? (Yes/no): ')
-        if ans.lower() == 'no':
-            print('Exit')
-            exit()
-    elif args.persistence == '':
-        args.persistence = None
+    if args.persistence is None and not args.no_persistence:
+        print('Either specify --persistence or --no-persistence. Exit')
+        return
     
     if args.task_type == 'upstream':
         modes = ['upstream']
@@ -165,7 +163,7 @@ def main(args=None):
             model_l2_decay=model_decay,
             mask_l2_decay=mask_decay,
             mask_sl1_decay=mask_decay,
-            mask_grad_eps=0
+            warmup_inactive_weights=True
         )
         model = ModelMasker(inner_model, device, masker_training_parameters=masker_training_parameters,
                             sparsity=sparsity)
@@ -198,16 +196,16 @@ def main(args=None):
         test_losses = []
         test_scores = []
         
-        optimizer = optim.SGD([
+        optimizer = optim.RMSprop([
             {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
             {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
         ])
-        lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=lr_factor)
+        lr_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=100)
         
         for epoch in range(n_epochs):
             
-            train_loss, train_score = train(args, model, optimizer, device, train_loader, epoch, lr_factor, verbose=args.verbose)
-            lr_scheduler.step()
+            train_loss, train_score = train(args, model, optimizer, lr_scheduler, device,
+                                            train_loader, epoch, lr_factor, verbose=args.verbose)
             train_losses.append(train_loss)
             train_scores.append(train_score)
             
