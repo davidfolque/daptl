@@ -4,6 +4,7 @@ import logging
 import copy
 from tqdm.notebook import tqdm
 import matplotlib.pyplot as plt
+import os
 
 import torch
 import torch.nn as nn
@@ -101,7 +102,7 @@ def main(args=None):
     parser.add_argument('--persistence', type=str)
     parser.add_argument('--no-persistence', action='store_true', default=False)
     parser.add_argument('--verbose', action='store_true', default=False)
-    parser.add_argument('--plots', action='store_true', default=False)
+    parser.add_argument('--plots', type=str, help='\'show\' to show in notebook/terminal, or a path to store images')
     parser.add_argument('--few-shot-size', type=int, default=10)
     parser.add_argument('--task', nargs='+', choices=['mnist1','mnist2','mnist3','cifar'], required=True)
     parser.add_argument('--model', choices=['LogReg', 'Conv', 'ResNet'], default='LogReg')
@@ -110,6 +111,9 @@ def main(args=None):
     if args.persistence is None and not args.no_persistence:
         print('Either specify --persistence or --no-persistence. Exit')
         return
+    
+    if args.plots and args.plots != 'show':
+        assert os.path.isdir(args.plots)
     
     if args.task_type == 'upstream':
         modes = ['upstream']
@@ -200,7 +204,7 @@ def main(args=None):
             {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
             {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
         ])
-        lr_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=100)
+        lr_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=len(train_loader))
         
         for epoch in range(n_epochs):
             
@@ -214,19 +218,27 @@ def main(args=None):
                 test_losses.append(test_loss)
                 test_scores.append(test_score)
                 
-                if args.plots:
+                if args.plots is not None:
                     all_mw = [pp.flatten() for pp in model.mask_weights.values()]
                     all_mw = torch.cat(all_mw, 0)
                     plt.hist(all_mw.detach().cpu().numpy())
                     plt.axvline(x=0, c='k')
-                    plt.show()
+                    if args.plots == 'show':
+                        plt.show()
+                    else:
+                        plt.savefig('{}/mask_weights_hist_{}.png'.format(args.plots, epoch + 1))
+                        plt.clf()
                     print(all_mw.min())
 
                     all_ltnz = [pp.flatten() for pp in model.last_time_nonzero.values()]
                     all_ltnz = torch.cat(all_ltnz, 0)
                     plt.hist(all_ltnz.cpu().numpy())
                     plt.axhline(y=all_ltnz.numel() * (1 - float(args.sparsity)), c='k')
-                    plt.show()
+                    if args.plots == 'show':
+                        plt.show()
+                    else:
+                        plt.savefig('{}/last_time_nonzero_{}.png'.format(args.plots, epoch + 1))
+                        plt.clf()
         
         #plt.imshow(model.model.fc1.weight.data.cpu().numpy()[0].reshape(8,8))
         #plt.show()
