@@ -21,11 +21,11 @@ from GridRun import grid_run
 from Persistence import Persistence
 
 
-def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, lr_factor, verbose=True):
+def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, verbose=True, progress_bar=False):
     model.train()
     train_loss = 0
     correct = 0
-    for batch_idx, (data, target) in enumerate(tqdm(train_loader, disable=not verbose)):
+    for batch_idx, (data, target) in enumerate(tqdm(train_loader, disable=not progress_bar)):
         data, target = data.to(device), target.to(device)
         model.zero_grad() # optimizer.zero_grad()
         output = model(data)
@@ -47,12 +47,12 @@ def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, lr_
     return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset)
 
 
-def test(model, device, test_loader, verbose=True):
+def test(model, device, test_loader, verbose=True, progress_bar=False):
     model.eval()
     test_loss = 0
     correct = 0
     with torch.no_grad():
-        for data, target in test_loader:
+        for data, target in tqdm(test_loader, disable=not progress_bar):
             data, target = data.to(device), target.to(device)
             output = model(data)
             test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
@@ -102,6 +102,7 @@ def main(args=None):
     parser.add_argument('--persistence', type=str)
     parser.add_argument('--no-persistence', action='store_true', default=False)
     parser.add_argument('--verbose', action='store_true', default=False)
+    parser.add_argument('--progress-bar', action='store_true', default=False)
     parser.add_argument('--plots', type=str, help='\'show\' to show in notebook/terminal, or a path to store images')
     parser.add_argument('--few-shot-size', type=int, default=10)
     parser.add_argument('--task', nargs='+', choices=['mnist1','mnist2','mnist3','cifar'], required=True)
@@ -134,7 +135,6 @@ def main(args=None):
         'mask_lr': args.mask_lr,
         'model_decay': args.model_decay,
         'mask_decay': args.mask_decay,
-        'lr_factor': 0.9,
         'mode': modes,
         'task': args.task,
         'sparsity': eval(args.sparsity),
@@ -143,7 +143,7 @@ def main(args=None):
     
     
     def run_experiment(batch_size, test_batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_decay, sparsity,
-                    lr_factor, seed, mode, task, config):
+                    seed, mode, task, config):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         torch.manual_seed(seed)
         
@@ -209,12 +209,14 @@ def main(args=None):
         for epoch in range(n_epochs):
             
             train_loss, train_score = train(args, model, optimizer, lr_scheduler, device,
-                                            train_loader, epoch, lr_factor, verbose=args.verbose)
+                                            train_loader, epoch, verbose=args.verbose,
+                                            progress_bar=args.progress_bar)
             train_losses.append(train_loss)
             train_scores.append(train_score)
             
             if True: #not args.few_shot or (epoch+1)%10 == 0:
-                test_loss, test_score = test(model, device, test_loader, verbose=args.verbose)
+                test_loss, test_score = test(model, device, test_loader, verbose=args.verbose,
+                                             progress_bar=args.progress_bar)
                 test_losses.append(test_loss)
                 test_scores.append(test_score)
                 
@@ -240,9 +242,6 @@ def main(args=None):
                         plt.savefig('{}/last_time_nonzero_{}.png'.format(args.plots, epoch + 1))
                         plt.clf()
         
-        #plt.imshow(model.model.fc1.weight.data.cpu().numpy()[0].reshape(8,8))
-        #plt.show()
-
         return {
             'test_score': test_scores[-1],
             'train_losses': train_losses,
