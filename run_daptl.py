@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 
 from ModelMasker import ModelMasker, MaskerTrainingParameters
-from Nets import LogReg, Net, WrapperNet
+from Nets import LogReg, Conv1, Conv2
 from Tasks import get_datasets
 
 from GridRun import grid_run
@@ -71,7 +71,7 @@ def test(model, device, test_loader, verbose=True, progress_bar=False):
     
 
 
-def main(args=None):
+def main(args=None, return_model=False):
     logging.basicConfig(level=logging.INFO)
     
     # Training settings
@@ -88,7 +88,9 @@ def main(args=None):
                         help='mask learning rate (default: 0.05)')
     parser.add_argument('--model-decay', type=float, default=1e-4, metavar='Model weight decay',
                         help='L2 and model weight decay (default: 1e-4)')
-    parser.add_argument('--mask-decay', type=float, default=5e-3, metavar='Maks weight decay',
+    parser.add_argument('--mask-l2-decay', type=float, default=5e-3, metavar='Maks L2 weight decay',
+                        help='L2 and model weight decay (default: 5e-3)')
+    parser.add_argument('--mask-sl1-decay', type=float, default=5e-3, metavar='Maks signed L1 weight decay',
                         help='L2 and model weight decay (default: 5e-3)')
     parser.add_argument('--sparsity', type=str, default='[0.5, 0.7, 0.8, 0.9, 0.95]', metavar='Sparsity',
                         help='Proportion of the weights to zero out (default: [0.5, 0.7, 0.8, 0.9, 0.95])')
@@ -104,9 +106,10 @@ def main(args=None):
     parser.add_argument('--verbose', action='store_true', default=False)
     parser.add_argument('--progress-bar', action='store_true', default=False)
     parser.add_argument('--plots', type=str, help='\'show\' to show in notebook/terminal, or a path to store images')
+    parser.add_argument('--few-shot', action='store_true', default=False)
     parser.add_argument('--few-shot-size', type=int, default=10)
-    parser.add_argument('--task', nargs='+', choices=['mnist1','mnist2','mnist3','cifar'], required=True)
-    parser.add_argument('--model', choices=['LogReg', 'Conv', 'ResNet'], default='LogReg')
+    parser.add_argument('--task', nargs='+', choices=['mnist1','mnist2','mnist3','cifar-32', 'cifar-224'], required=True)
+    parser.add_argument('--model', choices=['LogReg', 'Conv1', 'Conv2', 'ResNet'], default='LogReg')
     args = parser.parse_args(args=args)
     
     if args.persistence is None and not args.no_persistence:
@@ -125,16 +128,17 @@ def main(args=None):
                 'downstream_transfer_mask_random_weights', 
                 'downstream_random_mask_and_weights',
                 ]
-        batch_size = min(args.few_shot_size, args.batch_size)
+        if args.few_shot:
+            batch_size = min(args.few_shot_size, args.batch_size)
     
     grid = {
         'batch_size': batch_size,
-        'test_batch_size': args.test_batch_size,
         'n_epochs': args.epochs,
         'model_lr': args.model_lr,
         'mask_lr': args.mask_lr,
         'model_decay': args.model_decay,
-        'mask_decay': args.mask_decay,
+        'mask_l2_decay': args.mask_l2_decay,
+        'mask_sl1_decay': args.mask_sl1_decay,
         'mode': modes,
         'task': args.task,
         'sparsity': eval(args.sparsity),
@@ -142,31 +146,35 @@ def main(args=None):
     }
     
     
-    def run_experiment(batch_size, test_batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_decay, sparsity,
-                    seed, mode, task, config):
+    def run_experiment(batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_l2_decay, 
+                       mask_sl1_decay, sparsity, seed, mode, task, config):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         torch.manual_seed(seed)
         
         X_train, X_test, model_outputs = get_datasets(task, mode == 'upstream', args.few_shot_size)
         
-        train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True)
-        test_loader = torch.utils.data.DataLoader(X_test, batch_size=test_batch_size, shuffle=False)
+        train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True, 
+                                                   num_workers=2, pin_memory=True)
+        test_loader = torch.utils.data.DataLoader(X_test, batch_size=args.test_batch_size, shuffle=False,
+                                                  num_workers=2, pin_memory=True)
         
         if args.model == 'LogReg':
             inner_model = LogReg(outputs=model_outputs)
-        elif args.model == 'Conv':
-            inner_model = Net(outputs=model_outputs)
+        elif args.model == 'Conv1':
+            inner_model = Conv1(outputs=model_outputs)
+        elif args.model == 'Conv2':
+            inner_model = Conv2(outputs=model_outputs)
         elif args.model == 'ResNet':
-            inner_model = WrapperNet(resnet18(pretrained=True), outputs=model_outputs)
-            
-            # Fix model output and input sizes.
+            #inner_model = WrapperNet(resnet18(pretrained=True), outputs=model_outputs)
+            inner_model = resnet18(pretrained=False)
+            inner_model.fc = nn.Linear(inner_model.fc.in_features, model_outputs)
             
         masker_training_parameters = MaskerTrainingParameters(
             model_lr=model_lr,
             mask_lr=mask_lr,
             model_l2_decay=model_decay,
-            mask_l2_decay=mask_decay,
-            mask_sl1_decay=mask_decay,
+            mask_l2_decay=mask_l2_decay,
+            mask_sl1_decay=mask_sl1_decay,
             warmup_inactive_weights=True
         )
         model = ModelMasker(inner_model, device, masker_training_parameters=masker_training_parameters,
@@ -242,7 +250,7 @@ def main(args=None):
                         plt.savefig('{}/last_time_nonzero_{}.png'.format(args.plots, epoch + 1))
                         plt.clf()
         
-        return {
+        ret = {
             'test_score': test_scores[-1],
             'train_losses': train_losses,
             'train_scores': train_scores,
@@ -251,8 +259,11 @@ def main(args=None):
             'model_state_dict': model.state_dict(),
             'mask_n_ones': int(model.count_ones()[0])
         }
+        if return_model:
+            ret['return_model'] = model
+        return ret
     
-    grid_run(run_experiment, grid, args.persistence, ignore_previous_results=True)
+    return grid_run(run_experiment, grid, args.persistence, ignore_previous_results=True)
 
 
 if __name__ == '__main__':

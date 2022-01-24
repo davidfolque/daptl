@@ -55,6 +55,10 @@ def grid_run(run_experiment_fnc, grid, path=None, ignore_previous_results=False)
             with Persistence(path) as db:
                 db.add_new_entry(config, experiment_results)
             logger.info('Results added to persistence in %s.', path)
+        
+        # Added for developing.
+        if 'return_model' in experiment_results:
+            return experiment_results['return_model']
 
 if __name__ == '__main__':
     grid = {

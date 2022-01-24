@@ -23,8 +23,14 @@ v3: Simplified implementation and added features.
     - Divided mask_lr_decay into mask_l2_decay and mask_sl1_decay.
     - Removed abs_l1_reg_mask.
 
-TODO:
+New version:
     - Add option to make mask random or not.
+    - Remove pretrained weights. Change norms of cifar dataset. Done.
+    - Think how to use resnet on 32x32 images. Resizes??
+    - Adapt model to not have unused parameters (fc layer with 1000 output size when only 10 are used). Done.
+
+
+TODO:
 
 '''
 
