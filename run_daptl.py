@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 
 from ModelMasker import ModelMasker, MaskerTrainingParameters
-from Nets import LogReg, Conv1, Conv2
+from Nets import LogReg, Conv1, Conv2, WrapperNet
 from Tasks import get_datasets
 
 from GridRun import grid_run
@@ -165,9 +165,9 @@ def main(args=None, return_model=False):
         elif args.model == 'Conv2':
             inner_model = Conv2(outputs=model_outputs)
         elif args.model == 'ResNet':
-            #inner_model = WrapperNet(resnet18(pretrained=True), outputs=model_outputs)
             inner_model = resnet18(pretrained=False)
             inner_model.fc = nn.Linear(inner_model.fc.in_features, model_outputs)
+            inner_model = WrapperNet(inner_model)
             
         masker_training_parameters = MaskerTrainingParameters(
             model_lr=model_lr,

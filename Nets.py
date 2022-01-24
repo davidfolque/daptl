@@ -73,4 +73,12 @@ class LogReg(nn.Module):
         output = F.log_softmax(x, dim=1)
         return output
 
-        
+class WrapperNet(nn.Module):
+    def __init__(self, net):
+        super(WrapperNet, self).__init__()
+        self.net = net
+    
+    def forward(self, x):
+        x = self.net(x)
+        output = F.log_softmax(x, dim=1)
+        return output
