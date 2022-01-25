@@ -58,7 +58,7 @@ class ModelMasker(nn.Module):
         mask_weights -= mask_lr * (mask_weights.grad + mask_decay * (l1_term + mask_weights))
     """
     
-    def __init__(self, model, device, masker_training_parameters, sparsity):
+    def __init__(self, model, device, masker_training_parameters, sparsity, train_mask):
         super(ModelMasker, self).__init__()
         
         self.model = model.to(device)
@@ -69,7 +69,7 @@ class ModelMasker(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.hardm = 1000
         self.softm = 10
-        self.training_mask = True
+        self.training_mask = train_mask
         
         # The weights of the model.
         self.model_weights = {}
@@ -171,8 +171,8 @@ class ModelMasker(nn.Module):
         assert(self.masks is None)
         self.masks = {}
         for pn, pp in self.get_maskable_parameters():
-            self.masks[pn] = self.binarise(self.mask_weights[pn], hard=True)
-            pp.data = self.model_weights[pn].data * self.masks[pn].data
+            self.masks[pn] = self.binarise(self.mask_weights[pn].data, hard=True)
+            pp.data = self.model_weights[pn].data * self.masks[pn]
     
     def forward(self, x):
         self.put_on_mask()

@@ -177,8 +177,9 @@ def main(args=None, return_model=False):
             mask_sl1_decay=mask_sl1_decay,
             warmup_inactive_weights=True
         )
+        train_mask = mode == 'upstream' and sparsity > 0
         model = ModelMasker(inner_model, device, masker_training_parameters=masker_training_parameters,
-                            sparsity=sparsity)
+                            sparsity=sparsity, train_mask=train_mask)
         
         if mode != 'upstream':
             with Persistence(args.persistence) as db:
@@ -200,8 +201,6 @@ def main(args=None, return_model=False):
                 model.shift_mask_weights(mask_n_ones)
             else:
                 assert False
-        
-        model.training_mask = mode == 'upstream'
 
         train_losses = []
         train_scores = []
