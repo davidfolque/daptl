@@ -5,6 +5,7 @@ import copy
 from tqdm.notebook import tqdm
 import matplotlib.pyplot as plt
 import os
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -14,7 +15,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision.models import resnet18
 
 from ModelMasker import ModelMasker, MaskerTrainingParameters
-from Nets import LogReg, Conv1, Conv2, WrapperNet
+from Nets import LogReg, Conv1, Conv2, Conv3, WrapperNet
 from Tasks import get_datasets
 
 from GridRun import grid_run
@@ -36,7 +37,8 @@ def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, ver
         loss.backward()
         model.compute_gradients()
         optimizer.step()
-        lr_scheduler.step()
+        if lr_scheduler:
+            lr_scheduler.step()
         ones, density = model.count_ones()
         if verbose and batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tDensity: {:.6f} ({})'.format(
@@ -109,7 +111,8 @@ def main(args=None, return_model=False):
     parser.add_argument('--few-shot', action='store_true', default=False)
     parser.add_argument('--few-shot-size', type=int, default=10)
     parser.add_argument('--task', nargs='+', choices=['mnist1','mnist2','mnist3','cifar-32', 'cifar-224'], required=True)
-    parser.add_argument('--model', choices=['LogReg', 'Conv1', 'Conv2', 'ResNet'], default='LogReg')
+    parser.add_argument('--model', choices=['LogReg', 'Conv1', 'Conv2', 'Conv3', 'ResNet'], default='LogReg')
+    parser.add_argument('--late-mask-training', action='store_true', default=False)
     args = parser.parse_args(args=args)
     
     if args.persistence is None and not args.no_persistence:
@@ -119,9 +122,9 @@ def main(args=None, return_model=False):
     if args.plots and args.plots != 'show':
         assert os.path.isdir(args.plots)
     
+    batch_size = args.batch_size
     if args.task_type == 'upstream':
         modes = ['upstream']
-        batch_size = args.batch_size
     else:
         modes = [
                 'downstream_transfer_mask_and_weights',
@@ -139,6 +142,7 @@ def main(args=None, return_model=False):
         'model_decay': args.model_decay,
         'mask_l2_decay': args.mask_l2_decay,
         'mask_sl1_decay': args.mask_sl1_decay,
+        'late_mask_training': args.late_mask_training,
         'mode': modes,
         'task': args.task,
         'sparsity': eval(args.sparsity),
@@ -147,16 +151,17 @@ def main(args=None, return_model=False):
     
     
     def run_experiment(batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_l2_decay, 
-                       mask_sl1_decay, sparsity, seed, mode, task, config):
+                       mask_sl1_decay, late_mask_training, sparsity, seed, mode, task, config):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         torch.manual_seed(seed)
         
-        X_train, X_test, model_outputs = get_datasets(task, mode == 'upstream', args.few_shot_size)
+        X_train, X_test, model_outputs = get_datasets(task, mode == 'upstream',
+                                                      args.few_shot_size if args.few_shot else None)
         
         train_loader = torch.utils.data.DataLoader(X_train, batch_size=batch_size, shuffle=True, 
-                                                   num_workers=2, pin_memory=True)
+                                                   num_workers=1, pin_memory=True)
         test_loader = torch.utils.data.DataLoader(X_test, batch_size=args.test_batch_size, shuffle=False,
-                                                  num_workers=2, pin_memory=True)
+                                                  num_workers=1, pin_memory=True)
         
         if args.model == 'LogReg':
             inner_model = LogReg(outputs=model_outputs)
@@ -164,6 +169,8 @@ def main(args=None, return_model=False):
             inner_model = Conv1(outputs=model_outputs)
         elif args.model == 'Conv2':
             inner_model = Conv2(outputs=model_outputs)
+        elif args.model == 'Conv3':
+            inner_model = Conv3(outputs=model_outputs)
         elif args.model == 'ResNet':
             inner_model = resnet18(pretrained=False)
             inner_model.fc = nn.Linear(inner_model.fc.in_features, model_outputs)
@@ -178,8 +185,11 @@ def main(args=None, return_model=False):
             warmup_inactive_weights=True
         )
         train_mask = mode == 'upstream' and sparsity > 0
+        train_mask_early = train_mask and not late_mask_training
         model = ModelMasker(inner_model, device, masker_training_parameters=masker_training_parameters,
-                            sparsity=sparsity, train_mask=train_mask)
+                            sparsity=sparsity, train_mask=train_mask_early)
+        best_model = None
+        best_dev_score = -np.inf
         
         if mode != 'upstream':
             with Persistence(args.persistence) as db:
@@ -211,11 +221,12 @@ def main(args=None, return_model=False):
             {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
             {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
         ])
-        lr_scheduler = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=len(train_loader))
         
         for epoch in range(n_epochs):
+            if train_mask and epoch > 0:
+                model.training_mask = True
             
-            train_loss, train_score = train(args, model, optimizer, lr_scheduler, device,
+            train_loss, train_score = train(args, model, optimizer, None, device,
                                             train_loader, epoch, verbose=args.verbose,
                                             progress_bar=args.progress_bar)
             train_losses.append(train_loss)
@@ -226,6 +237,11 @@ def main(args=None, return_model=False):
                                              progress_bar=args.progress_bar)
                 test_losses.append(test_loss)
                 test_scores.append(test_score)
+                
+                if test_score > best_dev_score and model.count_ones()[1] - 0.005 <= 1 - sparsity:
+                    best_dev_score = test_score
+                    best_model = copy.deepcopy(model).cpu()
+                    print('Best model so far')
                 
                 if args.plots is not None:
                     all_mw = [pp.flatten() for pp in model.mask_weights.values()]
@@ -250,13 +266,13 @@ def main(args=None, return_model=False):
                         plt.clf()
         
         ret = {
-            'test_score': test_scores[-1],
+            'test_score': best_dev_score,
             'train_losses': train_losses,
             'train_scores': train_scores,
             'test_losses': test_losses,
             'test_scores': test_scores,
-            'model_state_dict': model.state_dict(),
-            'mask_n_ones': int(model.count_ones()[0])
+            'model_state_dict': best_model.state_dict() if best_model else None,
+            'mask_n_ones': int(best_model.count_ones()[0]) if best_model else None
         }
         if return_model:
             ret['return_model'] = model

@@ -129,8 +129,8 @@ def get_datasets(task, is_upstream, few_shot_size=None):
                                        download=True, transform=transform)
             X_test = datasets.CIFAR10(root='../data', train=False,
                                       download=True, transform=transform)
-            X_train, _ = split_dataset(X_train, 10 * [few_shot_size])
-            
+            if few_shot_size:
+                raise NotImplementedError()
             return X_train, X_test, 10
         
         

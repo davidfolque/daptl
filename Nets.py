@@ -35,32 +35,65 @@ class Conv1(nn.Module):
         return output
 
 class Conv2(nn.Module):
-    '''
-    - Input: 32x32x3.
-    - Conv1 + pool: 15x15x16
-    - Conv2 + pool: 6x6x32
-    - Conv3 + pool: 2x2x64
-    - FC: outputs
-    
-    '''
-    
     def __init__(self, outputs=10):
         super(Conv2, self).__init__()
-        self.conv1 = nn.Conv2d(3, 24, 5)
-        self.conv2 = nn.Conv2d(24, 24, 3)
-        self.conv3 = nn.Conv2d(24, 36, 3)
+        self.conv1 = nn.Conv2d(3, 24, 5, padding=2)
+        self.bn1 = nn.BatchNorm2d(24)
+        self.conv2 = nn.Conv2d(24, 24, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(24)
+        self.conv3 = nn.Conv2d(24, 36, 3, padding=1)
+        self.bn3 = nn.BatchNorm2d(36)
         self.pool = nn.MaxPool2d(2, 2)
-        self.fc = nn.Linear(2*2*36, outputs)
+        self.fc = nn.Linear(4*4*36, outputs)
     
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.pool(F.relu(self.conv3(x)))
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
         x = self.fc(torch.flatten(x, 1))
         x = F.log_softmax(x, dim=1)
         return x
         
+class Conv3(nn.Module):
+    
+    def __init__(self, outputs=10):
+        super(Conv3, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.relu = nn.ReLU()
         
+        self.conv2 = nn.Conv2d(32, 32, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.pool = nn.MaxPool2d(2, 2)
+        
+        self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
+        
+        self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
+        self.bn4 = nn.BatchNorm2d(64)
+        
+        self.conv5 = nn.Conv2d(64, 128, 3, padding=1)
+        self.bn5 = nn.BatchNorm2d(128)
+        
+        self.conv6 = nn.Conv2d(128, 128, 3, padding=1)
+        self.bn6 = nn.BatchNorm2d(128)
+        
+        self.fc = nn.Linear(4*4*128, outputs)
+        
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.pool(x)
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.relu(self.bn4(self.conv4(x)))
+        x = self.pool(x)
+        x = self.relu(self.bn5(self.conv5(x)))
+        x = self.relu(self.bn6(self.conv6(x)))
+        x = self.pool(x)
+        x = self.fc(torch.flatten(x, 1))
+        return F.log_softmax(x, dim=1)
+
+
 
 class LogReg(nn.Module):
     def __init__(self, outputs=2):

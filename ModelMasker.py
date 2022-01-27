@@ -22,15 +22,19 @@ v3: Simplified implementation and added features.
     - Added parameter warm-up inactive weights.
     - Divided mask_lr_decay into mask_l2_decay and mask_sl1_decay.
     - Removed abs_l1_reg_mask.
+v3.1: Enable loading all the model but the last layer. Quick version before v4.
 
-New version:
-    - Add option to make mask random or not.
-    - Remove pretrained weights. Change norms of cifar dataset. Done.
-    - Think how to use resnet on 32x32 images. Resizes??
-    - Adapt model to not have unused parameters (fc layer with 1000 output size when only 10 are used). Done.
 
 
 TODO:
+    - Compare:
+        - Start training masks at epoch 1 or 2.
+        - Warm-up model weights or not.
+        - Different resting points.
+    - Optimize training for fixed mask.
+    - New version to handle last layer separately. We don't want to mask it. But then what happens with logistic regression??
+    - Add option to make mask random or not.
+    
 
 '''
 
@@ -111,10 +115,21 @@ class ModelMasker(nn.Module):
                 'model_weights': self.model_weights,
                 'mask_weights': self.mask_weights}
     
-    def load_state_dict(self, state_dict):
-        self.model.load_state_dict(state_dict['model_state_dict'])
-        self.model_weights = state_dict['model_weights']
-        self.mask_weights = state_dict['mask_weights']
+    def load_state_dict(self, state_dict, load_last_layer=False):
+        exempt = [] if load_last_layer else ['fc.weight', 'fc.bias']
+        if any(ex not in state_dict['model_state_dict'] for ex in exempt):
+            raise NotImplementedError('Exempted parameters {exempt} are missing in state dict')
+        
+        for pn in state_dict['model_weights'].keys():
+            if pn in exempt:
+                del state_dict['model_state_dict'][pn]
+            else:
+                self.model_weights[pn] = state_dict['model_weights'][pn]
+                self.mask_weights[pn] = state_dict['mask_weights'][pn]
+        
+        keys = self.model.load_state_dict(state_dict['model_state_dict'], strict=False)
+        assert set(keys.missing_keys) == set(exempt) and len(keys.unexpected_keys) == 0
+        
     
     def load(self, path):
         with open(path, 'rb') as fp:
