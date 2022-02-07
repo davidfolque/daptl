@@ -34,6 +34,7 @@ TODO:
     - Optimize training for fixed mask.
     - New version to handle last layer separately. We don't want to mask it. But then what happens with logistic regression??
     - Add option to make mask random or not.
+    - Data augmentation.
     
 
 '''
@@ -62,7 +63,8 @@ class ModelMasker(nn.Module):
         mask_weights -= mask_lr * (mask_weights.grad + mask_decay * (l1_term + mask_weights))
     """
     
-    def __init__(self, model, device, masker_training_parameters, sparsity, train_mask):
+    def __init__(self, model, device, masker_training_parameters, sparsity, train_mask,
+                 unmaskable_parameters=[]):
         super(ModelMasker, self).__init__()
         
         self.model = model.to(device)
@@ -74,6 +76,18 @@ class ModelMasker(nn.Module):
         self.hardm = 1000
         self.softm = 10
         self.training_mask = train_mask
+        self.unmaskable_parameters = unmaskable_parameters
+        for pn in self.unmaskable_parameters:
+            assert pn in dict(self.model.named_parameters())
+        
+        # maskable_parameters_names are all but bn and unmaskable_parameters.
+        self.maskable_parameters_names = []
+        for pn, pp in model.named_parameters():
+            if is_not_bn(pn) and pn not in self.unmaskable_parameters:
+                print('Masked:  ', pn, pp.numel())
+                self.maskable_parameters_names.append(pn)
+            else:
+                print('Unmasked:', pn, pp.numel())
         
         # The weights of the model.
         self.model_weights = {}
@@ -102,34 +116,29 @@ class ModelMasker(nn.Module):
     # If is_model == False, returns all mask weights.
     def get_optimizable_parameters(self, is_model):
         for pn, pp in self.model.named_parameters():
-            if is_not_bn(pn):
+            if pn in self.maskable_parameters_names:
                 yield self.model_weights[pn] if is_model else self.mask_weights[pn]
             elif is_model:
                 yield pp
 
     def get_maskable_parameters(self):
-        return filter(lambda x: is_not_bn(x[0]), self.model.named_parameters())
+        return filter(lambda x: x[0] in self.maskable_parameters_names, self.model.named_parameters())
     
     def state_dict(self):
         return {'model_state_dict': self.model.state_dict(),
                 'model_weights': self.model_weights,
                 'mask_weights': self.mask_weights}
     
-    def load_state_dict(self, state_dict, load_last_layer=False):
-        exempt = [] if load_last_layer else ['fc.weight', 'fc.bias']
-        if any(ex not in state_dict['model_state_dict'] for ex in exempt):
-            raise NotImplementedError('Exempted parameters {exempt} are missing in state dict')
+    def load_state_dict(self, state_dict):
+        assert set(state_dict['model_weights'].keys()) == set(self.maskable_parameters_names)
+        self.model_weights = state_dict['model_weights']
+        self.mask_weights = state_dict['mask_weights']
         
-        for pn in state_dict['model_weights'].keys():
-            if pn in exempt:
-                del state_dict['model_state_dict'][pn]
-            else:
-                self.model_weights[pn] = state_dict['model_weights'][pn]
-                self.mask_weights[pn] = state_dict['mask_weights'][pn]
+        for pn in self.unmaskable_parameters:
+            del state_dict['model_state_dict'][pn]
         
         keys = self.model.load_state_dict(state_dict['model_state_dict'], strict=False)
-        assert set(keys.missing_keys) == set(exempt) and len(keys.unexpected_keys) == 0
-        
+        assert set(keys.missing_keys) == set(self.unmaskable_parameters) and len(keys.unexpected_keys) == 0
     
     def load(self, path):
         with open(path, 'rb') as fp:
@@ -167,13 +176,16 @@ class ModelMasker(nn.Module):
             ones_cnt += self.masks[pn].sum()
         return size_cnt, ones_cnt
     
-    def shift_mask_weights(self, n_ones):
-        all_weights = [pp.flatten() for pp in self.mask_weights.values()]
+    def shift_mask_weights(self, n_ones, randomize_mask=True):
+        if randomize_mask:
+            for pp in self.mask_weights.values():
+                pp.data += torch.randn(pp.shape).to(self.device) * 0.03
+        all_weights = [pp.data.flatten() for pp in self.mask_weights.values()]
         all_weights = torch.cat(all_weights, 0)
         values, _ = all_weights.topk(n_ones + 1, sorted=False)
         kth_value = values.min()
         for pn in self.mask_weights:
-            self.mask_weights[pn] -= kth_value
+            self.mask_weights[pn].data -= kth_value
     
     def binarise(self, mask, hard):
         if not self.training or not self.training_mask:

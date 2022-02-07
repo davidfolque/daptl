@@ -22,7 +22,8 @@ from GridRun import grid_run
 from Persistence import Persistence
 
 
-def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, verbose=True, progress_bar=False):
+def train(args, model, model_optim, mask_optim, model_lr_scheduler, mask_lr_scheduler, device, 
+          train_loader, epoch, verbose=True, progress_bar=False):
     model.train()
     train_loss = 0
     correct = 0
@@ -36,9 +37,12 @@ def train(args, model, optimizer, lr_scheduler, device, train_loader, epoch, ver
         train_loss += loss.item() * len(data)
         loss.backward()
         model.compute_gradients()
-        optimizer.step()
-        if lr_scheduler:
-            lr_scheduler.step()
+        model_optim.step()
+        mask_optim.step()
+        if model_lr_scheduler:
+            model_lr_scheduler.step()
+        if mask_lr_scheduler:
+            mask_lr_scheduler.step()
         ones, density = model.count_ones()
         if verbose and batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tDensity: {:.6f} ({})'.format(
@@ -175,7 +179,13 @@ def main(args=None, return_model=False):
             inner_model = resnet18(pretrained=False)
             inner_model.fc = nn.Linear(inner_model.fc.in_features, model_outputs)
             inner_model = WrapperNet(inner_model)
-            
+        
+        if args.model in ['Conv1', 'Conv2', 'Conv3', 'ResNet']:
+            unmaskable_parameters = ['fc.weight', 'fc.bias']
+        else:
+            assert args.model == 'LogReg'
+            unmaskable_parameters = []
+        
         masker_training_parameters = MaskerTrainingParameters(
             model_lr=model_lr,
             mask_lr=mask_lr,
@@ -185,9 +195,9 @@ def main(args=None, return_model=False):
             warmup_inactive_weights=True
         )
         train_mask = mode == 'upstream' and sparsity > 0
-        train_mask_early = train_mask and not late_mask_training
         model = ModelMasker(inner_model, device, masker_training_parameters=masker_training_parameters,
-                            sparsity=sparsity, train_mask=train_mask_early)
+                            sparsity=sparsity, train_mask=train_mask,
+                            unmaskable_parameters=unmaskable_parameters)
         best_model = None
         best_dev_score = -np.inf
         
@@ -217,18 +227,18 @@ def main(args=None, return_model=False):
         test_losses = []
         test_scores = []
         
-        optimizer = optim.RMSprop([
-            {'params': model.get_optimizable_parameters(is_model=True), 'lr': model_lr},
-            {'params': model.get_optimizable_parameters(is_model=False), 'lr': mask_lr}
-        ])
+        model_optim = optim.RMSprop(model.get_optimizable_parameters(is_model=True), lr=model_lr)
+        mask_optim = optim.RMSprop(model.get_optimizable_parameters(is_model=False), lr=mask_lr)
+        mask_lr_scheduler = None
+        if late_mask_training:
+            mask_lr_scheduler = optim.lr_scheduler.LinearLR(mask_optim, start_factor=0.01,
+                                                            total_iters=len(train_loader) * 2)
         
         for epoch in range(n_epochs):
-            if train_mask and epoch > 0:
-                model.training_mask = True
             
-            train_loss, train_score = train(args, model, optimizer, None, device,
-                                            train_loader, epoch, verbose=args.verbose,
-                                            progress_bar=args.progress_bar)
+            train_loss, train_score = train(args, model, model_optim, mask_optim, None, 
+                                            mask_lr_scheduler, device, train_loader, epoch,
+                                            verbose=args.verbose, progress_bar=args.progress_bar)
             train_losses.append(train_loss)
             train_scores.append(train_score)
             
@@ -278,7 +288,7 @@ def main(args=None, return_model=False):
             ret['return_model'] = model
         return ret
     
-    return grid_run(run_experiment, grid, args.persistence, ignore_previous_results=True)
+    return grid_run(run_experiment, grid, args.persistence, ignore_previous_results=False)
 
 
 if __name__ == '__main__':
