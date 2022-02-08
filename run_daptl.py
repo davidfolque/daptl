@@ -28,6 +28,8 @@ def train(args, model, model_optim, mask_optim, model_lr_scheduler, mask_lr_sche
     train_loss = 0
     correct = 0
     for batch_idx, (data, target) in enumerate(tqdm(train_loader, disable=not progress_bar)):
+        #if batch_idx > 50:
+            #break
         data, target = data.to(device), target.to(device)
         model.zero_grad() # optimizer.zero_grad()
         output = model(data)
@@ -94,10 +96,8 @@ def main(args=None, return_model=False):
                         help='mask learning rate (default: 0.05)')
     parser.add_argument('--model-decay', type=float, default=1e-4, metavar='Model weight decay',
                         help='L2 and model weight decay (default: 1e-4)')
-    parser.add_argument('--mask-l2-decay', type=float, default=5e-3, metavar='Maks L2 weight decay',
-                        help='L2 and model weight decay (default: 5e-3)')
-    parser.add_argument('--mask-sl1-decay', type=float, default=5e-3, metavar='Maks signed L1 weight decay',
-                        help='L2 and model weight decay (default: 5e-3)')
+    parser.add_argument('--mask-resting-point', type=float, default=-1, metavar='Mask resting point parameter')
+    parser.add_argument('--mask-reg-factor', type=float, default=-1, metavar='Mask regularization factor')
     parser.add_argument('--sparsity', type=str, default='[0.5, 0.7, 0.8, 0.9, 0.95]', metavar='Sparsity',
                         help='Proportion of the weights to zero out (default: [0.5, 0.7, 0.8, 0.9, 0.95])')
     parser.add_argument('--lr-factor', type=float, default=0.9, metavar='M',
@@ -144,8 +144,8 @@ def main(args=None, return_model=False):
         'model_lr': args.model_lr,
         'mask_lr': args.mask_lr,
         'model_decay': args.model_decay,
-        'mask_l2_decay': args.mask_l2_decay,
-        'mask_sl1_decay': args.mask_sl1_decay,
+        'mask_resting_point': args.mask_resting_point,
+        'mask_reg_factor': args.mask_reg_factor,
         'late_mask_training': args.late_mask_training,
         'mode': modes,
         'task': args.task,
@@ -154,8 +154,8 @@ def main(args=None, return_model=False):
     }
     
     
-    def run_experiment(batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_l2_decay, 
-                       mask_sl1_decay, late_mask_training, sparsity, seed, mode, task, config):
+    def run_experiment(batch_size, n_epochs, model_lr, mask_lr, model_decay, mask_resting_point,
+                       mask_reg_factor, late_mask_training, sparsity, seed, mode, task, config):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         torch.manual_seed(seed)
         
@@ -190,8 +190,8 @@ def main(args=None, return_model=False):
             model_lr=model_lr,
             mask_lr=mask_lr,
             model_l2_decay=model_decay,
-            mask_l2_decay=mask_l2_decay,
-            mask_sl1_decay=mask_sl1_decay,
+            mask_resting_point=mask_resting_point,
+            mask_reg_factor=mask_reg_factor,
             warmup_inactive_weights=True
         )
         train_mask = mode == 'upstream' and sparsity > 0
@@ -231,8 +231,8 @@ def main(args=None, return_model=False):
         mask_optim = optim.RMSprop(model.get_optimizable_parameters(is_model=False), lr=mask_lr)
         mask_lr_scheduler = None
         if late_mask_training:
-            mask_lr_scheduler = optim.lr_scheduler.LinearLR(mask_optim, start_factor=0.01,
-                                                            total_iters=len(train_loader) * 2)
+            total_iters = len(train_loader) * 2 # 2 epochs
+            mask_lr_scheduler = optim.lr_scheduler.LambdaLR(mask_optim, lambda x: min(x/total_iters, 1))
         
         for epoch in range(n_epochs):
             
@@ -254,26 +254,53 @@ def main(args=None, return_model=False):
                     print('Best model so far')
                 
                 if args.plots is not None:
+                    def show(name):
+                        if args.plots == 'show':
+                            plt.show()
+                        else:
+                            plt.savefig('{}/{}_{}.png'.format(args.plots, name, epoch + 1))
+                            plt.clf()
+                    
+                    epoch_len = len(train_loader)
+                    epoch_milestones = list(range(0, model.steps + 1, epoch_len))
+                    epoch_labels = list(range(0, len(epoch_milestones)))
+                    
                     all_mw = [pp.flatten() for pp in model.mask_weights.values()]
                     all_mw = torch.cat(all_mw, 0)
                     plt.hist(all_mw.detach().cpu().numpy())
                     plt.axvline(x=0, c='k')
-                    if args.plots == 'show':
-                        plt.show()
-                    else:
-                        plt.savefig('{}/mask_weights_hist_{}.png'.format(args.plots, epoch + 1))
-                        plt.clf()
-                    print(all_mw.min())
-
+                    show('mask_weights_hist')
+                    
                     all_ltnz = [pp.flatten() for pp in model.last_time_nonzero.values()]
                     all_ltnz = torch.cat(all_ltnz, 0)
                     plt.hist(all_ltnz.cpu().numpy())
                     plt.axhline(y=all_ltnz.numel() * (1 - float(args.sparsity)), c='k')
-                    if args.plots == 'show':
-                        plt.show()
-                    else:
-                        plt.savefig('{}/last_time_nonzero_{}.png'.format(args.plots, epoch + 1))
-                        plt.clf()
+                    show('last_time_nonzero_hist')
+                    
+                    # Target density.
+                    plt.axhline(y=1 - float(args.sparsity), c='k', linestyle='--', label='Target')
+                    # Alive overall density.
+                    sorted_ltnz = np.sort(all_ltnz.cpu().numpy())
+                    last_index = np.searchsorted(sorted_ltnz, sorted_ltnz[-1], side='left')
+                    sorted_ltnz = sorted_ltnz[:last_index]
+                    y_values = list(range(all_ltnz.numel(), all_ltnz.numel() - len(sorted_ltnz), -1))
+                    y_values = np.array(y_values) / all_ltnz.numel()
+                    plt.plot(sorted_ltnz, y_values, label='overall alive', c='C0', linestyle='--')
+                    # Overall density.
+                    plt.plot(model.densities['overall'], label='overall')
+                    # Per-layer density.
+                    for pn, pd in model.densities.items():
+                        if pn != 'overall':
+                            plt.plot(pd, label=pn)
+                    plt.xticks(epoch_milestones, labels=epoch_labels)
+                    plt.legend()
+                    plt.ylim([-0.05, 1.05])
+                    show('densities')
+                    
+                    plt.plot(model.reg_ratios, label='Reg ratios')
+                    plt.xticks(epoch_milestones, labels=epoch_labels)
+                    plt.legend()
+                    show('reg_ratios')
         
         ret = {
             'test_score': best_dev_score,
